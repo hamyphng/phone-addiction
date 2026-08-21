@@ -1,0 +1,21 @@
+# Core data and modeling stack for Kaggle Playground Series S6E8
+numpy>=1.26,<3
+pandas>=2.2,<3
+scipy>=1.12,<2
+scikit-learn>=1.5,<2
+
+# Gradient-boosted tabular baselines
+lightgbm>=4.5,<5
+xgboost>=2.1,<4
+catboost>=1.2,<2
+
+# Experimentation and analysis
+optuna>=4,<5
+shap>=0.46,<1
+joblib>=1.4,<2
+matplotlib>=3.8,<4
+seaborn>=0.13,<1
+jupyterlab>=4,<5
+
+# Competition utilities
+kaggle>=1.6,<2

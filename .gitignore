@@ -1,0 +1,13 @@
+# Python environment and local tooling
+.venv/
+.ipynb_checkpoints/
+__pycache__/
+*.py[cod]
+
+# Competition data, credentials, and generated experiments
+data/*.csv
+.kaggle/
+artifacts/
+models/
+submissions/
+*.log

@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Giải thích pipeline S6E8</title>
+  <style>
+    :root{--bg:#0b1220;--card:#15203a;--line:#2b3d62;--ink:#edf3ff;--muted:#b7c5df;--accent:#77d8b5;--code:#080d18}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 Segoe UI,Arial,sans-serif}header{padding:52px max(24px,calc((100% - 1040px)/2));background:linear-gradient(120deg,#162a51,#12403b)}main{max-width:1040px;margin:auto;padding:26px 24px 70px}h1{font-size:clamp(2rem,5vw,3.5rem);line-height:1.1;margin:0 0 8px}h2{margin-top:48px}h3{margin-bottom:6px}p,li,td{color:var(--muted)}strong{color:var(--ink)}a{color:#9ec4ff}.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin:18px 0}.flow{display:flex;align-items:center;flex-wrap:wrap;gap:10px}.node{padding:9px 13px;background:#0c1830;border:1px solid #40619b;border-radius:9px;font-weight:600}.arrow{color:var(--accent);font-size:22px}pre{overflow:auto;padding:15px;background:var(--code);border:1px solid #263655;border-radius:9px;color:#d9e7ff;font:13px/1.55 Consolas,monospace}code{color:#c9ddff;font-family:Consolas,monospace}.tag{display:inline-block;background:var(--accent);color:#08221b;border-radius:5px;padding:2px 7px;font-weight:700;font-size:.8rem}table{width:100%;border-collapse:collapse}th,td{padding:10px;border:1px solid var(--line);text-align:left}th{background:#1c2c4b}.note{padding:10px 14px;border-left:4px solid var(--accent);background:#102c2a}nav{display:flex;gap:8px;flex-wrap:wrap;margin-top:20px}nav a{border:1px solid var(--line);border-radius:99px;text-decoration:none;padding:4px 10px}
+  </style>
+</head>
+<body>
+<header>
+  <span class="tag">Kaggle S6E8</span>
+  <h1>Giải thích code pipeline LightGBM</h1>
+  <p>Đọc CSV → kiểm tra dữ liệu → chia 5 folds → encode categorical an toàn → train → OOF → submission.</p>
+  <nav><a href="#flow">Luồng chạy</a><a href="#config">config.py</a><a href="#data">data.py</a><a href="#cv">cv.py</a><a href="#train">train_lgbm.py</a><a href="#out">Output</a></nav>
+</header>
+<main>
+<section id="flow"><h2>1. Luồng chạy tổng thể</h2><div class="card flow">
+<div class="node">train.csv + test.csv</div><span class="arrow">→</span><div class="node">data.py</div><span class="arrow">→</span><div class="node">cv.py: 5 folds</div><span class="arrow">→</span><div class="node">LightGBM × 5</div><span class="arrow">→</span><div class="node">OOF + avg test</div><span class="arrow">→</span><div class="node">submission.csv</div>
+</div><p><strong>OOF</strong> (out-of-fold) là dự đoán của một dòng train từ model chưa từng train trên chính dòng đó. Vì vậy OOF ROC AUC là score local đáng tin để chọn model và ensemble.</p></section>
+
+<section id="config"><h2>2. <code>src/config.py</code> — cấu hình dùng chung</h2><div class="card"><pre>ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = ROOT / "data"
+ARTIFACTS_DIR = ROOT / "artifacts"
+...
+TARGET = "addicted_label"
+ID_COLUMN = "id"
+CATEGORICAL_COLUMNS = ["gender", "stress_level", "academic_work_impact"]
+N_FOLDS = 5
+FOLD_SEED = 42</pre><table><tr><th>Phần code</th><th>Giải thích</th></tr><tr><td><code>ROOT</code></td><td>Tìm thư mục project từ vị trí file; không hard-code ổ đĩa.</td></tr><tr><td><code>DATA_DIR / ARTIFACTS_DIR</code></td><td>Quy ước nơi đọc CSV và lưu kết quả.</td></tr><tr><td><code>CATEGORICAL_COLUMNS</code></td><td>Ba cột text cần encode trước khi đưa vào LightGBM.</td></tr><tr><td><code>FOLD_SEED</code></td><td>Giữ cùng validation split giữa các experiment.</td></tr></table></div></section>
+
+<section id="data"><h2>3. <code>src/data.py</code> — đọc và kiểm tra dữ liệu</h2><div class="card"><pre>train = pd.read_csv(data_dir / "train.csv")
+test = pd.read_csv(data_dir / "test.csv")
+sample_submission = pd.read_csv(data_dir / "sample_submission.csv")</pre><p>Hàm <code>load_competition_data()</code> đọc ba CSV và chạy các kiểm tra bắt buộc:</p><pre>if TARGET not in train: raise ValueError(...)
+if train[ID_COLUMN].duplicated().any() or test[ID_COLUMN].duplicated().any():
+    raise ValueError(...)
+if not test[ID_COLUMN].equals(sample_submission[ID_COLUMN]):
+    raise ValueError(...)</pre><ul><li>Target chỉ được có ở train.</li><li>ID phải unique để không thiếu hoặc lặp prediction.</li><li>Thứ tự test ID phải khớp sample submission.</li><li>Train/test phải có cùng feature schema; <code>id</code> bị loại khỏi feature list.</li></ul><p class="note">Các checks này làm script fail sớm nếu dùng nhầm file, thay vì tạo một submission sai âm thầm.</p></div></section>
+
+<section id="cv"><h2>4. <code>src/cv.py</code> — tạo 5 folds</h2><div class="card"><pre>folds = np.full(len(y), -1, dtype=np.int8)
+splitter = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
+for fold, (_, valid_idx) in enumerate(splitter.split(np.zeros(len(y)), y)):
+    folds[valid_idx] = fold</pre><p><code>StratifiedKFold</code> giữ tỷ lệ addicted/non-addicted gần bằng nhau trong mỗi fold. <code>shuffle=True</code> tạo split ngẫu nhiên, còn seed cố định giúp tái lập. Output là mảng 0–4, được lưu thành <code>artifacts/folds.csv</code>.</p></div></section>
+
+<section id="train"><h2>5. <code>src/train_lgbm.py</code> — baseline chính</h2>
+<div class="card"><h3>5.1 Tham số command line</h3><pre>python -m src.train_lgbm --run-name lgbm_raw_v02 --model-seed 42</pre><p><code>run-name</code> đặt tên riêng cho artifacts và submission. <code>model-seed</code> dùng khi thử multi-seed.</p></div>
+<div class="card"><h3>5.2 Encode categorical theo từng fold <span class="tag">chống leakage</span></h3><pre>encoder = OrdinalEncoder(handle_unknown="use_encoded_value",
+                         unknown_value=-1, encoded_missing_value=-1)
+train_encoded[CATEGORICAL_COLUMNS] = encoder.fit_transform(train_cat)
+valid_encoded[CATEGORICAL_COLUMNS] = encoder.transform(valid_cat)
+test_encoded[CATEGORICAL_COLUMNS] = encoder.transform(test_cat)</pre><p>Encoder chỉ <code>fit</code> trên training rows của fold. Validation/test chỉ <code>transform</code>, nên validation không thể “nhìn” preprocessing học từ chính nó. Missing text được thay bằng <code>__MISSING__</code>; category lạ có mã <code>-1</code>. Numeric missing giữ nguyên để LightGBM xử lý native.</p></div>
+<div class="card"><h3>5.3 Cấu hình LightGBM</h3><pre>params = {
+  "objective": "binary", "n_estimators": 3000,
+  "learning_rate": 0.04, "num_leaves": 63,
+  "min_child_samples": 100, "subsample": 0.85,
+  "colsample_bytree": 0.85, "reg_lambda": 1.0,
+}</pre><p><code>n_estimators=3000</code> là giới hạn trên. <code>early_stopping(150)</code> tự dừng khi AUC validation không tăng trong 150 rounds và prediction dùng <code>best_iteration_</code>.</p></div>
+<div class="card"><h3>5.4 Train 5 lần và tạo OOF</h3><pre>for fold in sorted(np.unique(folds)):
+    train_mask, valid_mask = folds != fold, folds == fold
+    model.fit(x_train, y.loc[train_mask], eval_set=[(x_valid, y.loc[valid_mask])])
+    valid_prediction = model.predict_proba(x_valid, ...)[:, 1]
+    oof_prediction[valid_mask] = valid_prediction
+    test_prediction += model.predict_proba(x_test, ...)[:, 1] / 5</pre><p>Mỗi vòng train một model với 80% dữ liệu và predict 20% còn lại. Test được predict 5 lần rồi lấy trung bình. Điều này giảm variance so với chỉ train một model.</p></div>
+<div class="card"><h3>5.5 Metric, importance và submission</h3><pre>fold_auc = roc_auc_score(y.loc[valid_mask], valid_prediction)
+overall_auc = roc_auc_score(y, oof_prediction)
+
+submission = sample_submission.copy()
+submission[TARGET] = np.clip(test_prediction, 0.0, 1.0)
+submission.to_csv(submission_path, index=False)</pre><p><code>fold_auc</code> kiểm tra stability từng fold; <code>overall_auc</code> dùng so sánh model. Copy sample submission giữ ID/order đúng. <code>np.clip</code> đảm bảo output thuộc [0, 1]. Script cũng lưu mean feature importance, JSON metrics và append experiment log.</p></div>
+</section>
+
+<section id="out"><h2>6. Kết quả được tạo</h2><div class="card"><table><tr><th>File</th><th>Mục đích</th></tr><tr><td><code>artifacts/folds.csv</code></td><td>CV split cố định cho mọi model.</td></tr><tr><td><code>artifacts/oof/lgbm_raw_v01.csv</code></td><td>Dùng đo OOF AUC và tìm blend weights.</td></tr><tr><td><code>artifacts/test_preds/lgbm_raw_v01.csv</code></td><td>Prediction test trước khi đóng gói submission.</td></tr><tr><td><code>artifacts/metrics_lgbm_raw_v01.json</code></td><td>Params, score từng fold và runtime.</td></tr><tr><td><code>submissions/lgbm_raw_v01.csv</code></td><td>File nộp Kaggle: <code>id,addicted_label</code>.</td></tr><tr><td><code>experiments.csv</code></td><td>Nhật ký các run nghiêm túc.</td></tr></table><p><strong>Baseline hiện tại:</strong> OOF ROC AUC = <strong>0.963722</strong>.</p></div></section>
+
+<section><h2>7. Cách dùng</h2><div class="card"><pre>.\.venv\Scripts\Activate.ps1
+python -m src.train_lgbm --run-name lgbm_raw_v02</pre><p>Hãy chọn cải tiến dựa trên OOF AUC, không tune theo Public Leaderboard. Sau khi có CatBoost/XGBoost, dùng OOF predictions để blend.</p></div></section>
+</main></body></html>
