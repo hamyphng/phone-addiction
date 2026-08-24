@@ -28,6 +28,7 @@ from src.config import (
 )
 from src.cv import make_folds
 from src.data import load_competition_data
+from src.features import AVAILABLE_FEATURE_SETS, make_features
 
 
 def encode_fold(train_x, valid_x, test_x, feature_columns):
@@ -52,12 +53,15 @@ def encode_fold(train_x, valid_x, test_x, feature_columns):
     return train_encoded, valid_encoded, test_encoded
 
 
-def main(run_name: str, model_seed: int):
+def main(run_name: str, model_seed: int, feature_set: str):
     start = time.perf_counter()
     for directory in (ARTIFACTS_DIR, OOF_DIR, TEST_PRED_DIR, SUBMISSIONS_DIR):
         directory.mkdir(parents=True, exist_ok=True)
 
-    train, test, sample_submission, feature_columns = load_competition_data()
+    train, test, sample_submission, _ = load_competition_data()
+    train_features = make_features(train, feature_set)
+    test_features = make_features(test, feature_set)
+    feature_columns = [column for column in test_features.columns if column != ID_COLUMN]
     y = train[TARGET]
     folds = make_folds(y)
     pd.DataFrame({ID_COLUMN: train[ID_COLUMN], "fold": folds}).to_csv(
@@ -79,7 +83,8 @@ def main(run_name: str, model_seed: int):
         "colsample_bytree": 0.85,
         "reg_lambda": 1.0,
         "random_state": model_seed,
-        "n_jobs": -1,
+        # A bounded thread count keeps five-fold runs reliable alongside Jupyter.
+        "n_jobs": 4,
         "verbosity": -1,
     }
 
@@ -87,9 +92,9 @@ def main(run_name: str, model_seed: int):
         train_mask = folds != fold
         valid_mask = folds == fold
         x_train, x_valid, x_test = encode_fold(
-            train.loc[train_mask, feature_columns],
-            train.loc[valid_mask, feature_columns],
-            test.loc[:, feature_columns],
+            train_features.loc[train_mask, feature_columns],
+            train_features.loc[valid_mask, feature_columns],
+            test_features.loc[:, feature_columns],
             feature_columns,
         )
         model = lgb.LGBMClassifier(**params)
@@ -126,7 +131,7 @@ def main(run_name: str, model_seed: int):
     metrics = {
         "run_name": run_name,
         "model": "LightGBM",
-        "feature_set": "raw",
+        "feature_set": feature_set,
         "fold_seed": FOLD_SEED,
         "model_seed": model_seed,
         "params": params,
@@ -142,7 +147,7 @@ def main(run_name: str, model_seed: int):
         "run_id": run_name,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "model": "LightGBM",
-        "feature_set": "raw",
+        "feature_set": feature_set,
         "fold_seed": FOLD_SEED,
         "model_seed": model_seed,
         "params": json.dumps(params, sort_keys=True),
@@ -165,5 +170,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-name", default="lgbm_raw_v01")
     parser.add_argument("--model-seed", type=int, default=42)
+    parser.add_argument("--feature-set", choices=AVAILABLE_FEATURE_SETS, default="raw")
     args = parser.parse_args()
-    main(args.run_name, args.model_seed)
+    main(args.run_name, args.model_seed, args.feature_set)
